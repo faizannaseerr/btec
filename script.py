@@ -1,7 +1,7 @@
 from docx import Document
 import csv
 import os
-from typing import Dict, List, Set
+from typing import Dict, List, Set, Optional, Callable
 import tempfile
 from openpyxl import load_workbook
 from datetime import date, datetime
@@ -115,7 +115,12 @@ def replace_all_placeholders(doc: Document, row: Dict[str, str]) -> None:
         replace_placeholders(doc, placeholder, replacement)
 
 
-def generate_documents_from_csv(csv_path: str, template_path: str, output_dir: str) -> None:
+def generate_documents_from_csv(
+    csv_path: str,
+    template_path: str,
+    output_dir: str,
+    progress: Optional[Callable[[str, Dict[str, object]], None]] = None,
+) -> None:
     if not os.path.exists(template_path):
         raise FileNotFoundError(f"Template not found: {template_path}")
     if not os.path.exists(csv_path):
@@ -123,27 +128,55 @@ def generate_documents_from_csv(csv_path: str, template_path: str, output_dir: s
 
     os.makedirs(output_dir, exist_ok=True)
 
+    # Pre-count total data rows for progress reporting
+    try:
+        with open(csv_path, mode='r', encoding='utf-8-sig', newline='') as f_count:
+            total_rows = max(0, sum(1 for _ in csv.reader(f_count)) - 1)
+    except Exception:
+        total_rows = 0
+
+    if progress:
+        progress('start', {'total_rows': total_rows})
+
+    generated_count = 0
+
     with open(csv_path, mode='r', encoding='utf-8-sig', newline='') as f:
         reader = csv.DictReader(f)
 
         for index, row in enumerate(reader):
-            # Create a fresh document from the template for each row
-            print(f"Creating document for row {index}")
-            doc = Document(template_path)
+            try:
+                if progress:
+                    progress('row_start', {'index': index, 'row': row})
 
-            replace_all_placeholders(doc, row)
+                # Create a fresh document from the template for each row
+                print(f"Creating document for row {index}")
+                doc = Document(template_path)
 
-            name = (row.get('Learner Name') or '').strip()
-            reg = (row.get('Learner Registration Number') or '').strip()
-            base_name = f"{name} {reg}".strip()
-            if f"{base_name}.docx" in os.listdir(output_dir):
-                base_name = f"{base_name}_{index + 1}"
-            if not base_name:
-                base_name = f"output_{index + 1}"
-            out_path = os.path.join(output_dir, f"{base_name}.docx")
+                replace_all_placeholders(doc, row)
 
-            doc.save(out_path)
-            print(f"Saved: {out_path}")
+                name = (row.get('Learner Name') or '').strip()
+                reg = (row.get('Learner Registration Number') or '').strip()
+                base_name = f"{name} {reg}".strip()
+                if f"{base_name}.docx" in os.listdir(output_dir):
+                    base_name = f"{base_name}_{index + 1}"
+                if not base_name:
+                    base_name = f"output_{index + 1}"
+                out_path = os.path.join(output_dir, f"{base_name}.docx")
+
+                doc.save(out_path)
+                print(f"Saved: {out_path}")
+
+                generated_count += 1
+                if progress:
+                    progress('row_done', {'index': index, 'out_path': out_path})
+            except Exception as e:
+                if progress:
+                    progress('row_error', {'index': index, 'error': str(e)})
+                # Continue with next row
+                continue
+
+    if progress:
+        progress('complete', {'generated': generated_count, 'total_rows': total_rows})
 
 def convert_xlsx_to_csv(xlsx_path: str, csv_path: str) -> None:
     """Convert the first worksheet of an .xlsx file to a UTF-8 CSV file."""

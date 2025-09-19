@@ -39,6 +39,15 @@ st.write(
     "Upload your Excel (.xlsx) file. The app will convert it to CSV and generate Word documents using the local template.docx."
 )
 
+with st.expander("What will happen?", expanded=False):
+    st.markdown(
+        "- Convert the uploaded Excel to CSV\n"
+        "- Read each row as one learner/record\n"
+        "- Fill placeholders in `template.docx` using the row values\n"
+        "- Save one `.docx` per row into the output folder"
+    )
+
+
 if not os.path.exists(TEMPLATE_PATH):
     st.error(f"Template not found at {TEMPLATE_PATH}. Place template.docx in this folder.")
 
@@ -54,6 +63,16 @@ generate_clicked = st.button("Generate Documents", type="primary", disabled=uplo
 if generate_clicked and uploaded is not None:
     try:
         import tempfile
+        status_placeholder = st.empty()
+        progress_bar = st.progress(0)
+        log_placeholder = st.empty()
+        logs = []
+
+        def append_log(line: str) -> None:
+            logs.append(line)
+            # Render as a growing log
+            log_placeholder.code("\n".join(logs))
+
         with tempfile.TemporaryDirectory() as tmpdir:
             # Save uploaded XLSX to a temporary file
             temp_xlsx_path = os.path.join(
@@ -65,10 +84,49 @@ if generate_clicked and uploaded is not None:
 
             # Convert to a temporary CSV
             temp_csv_path = os.path.join(tmpdir, "uploaded.csv")
+            status_placeholder.write("Converting Excel to CSV…")
             convert_xlsx_to_csv(temp_xlsx_path, temp_csv_path)
+            status_placeholder.write("CSV ready. Starting document generation…")
 
             # Generate documents into OUTPUT_DIR
-            generate_documents_from_csv(temp_csv_path, TEMPLATE_PATH, OUTPUT_DIR)
+            total_rows_box = {"value": 0}
+            done_count = {"value": 0}
+
+            def on_progress(event: str, payload: dict) -> None:
+                if event == "start":
+                    total = int(payload.get("total_rows", 0) or 0)
+                    total_rows_box["value"] = total
+                    progress_bar.progress(0)
+                    status_placeholder.write(f"Processing {total} row(s)…")
+                elif event == "row_start":
+                    idx = int(payload.get("index", 0)) + 1
+                    row = payload.get("row", {}) or {}
+                    learner = (row.get("Learner Name") or "").strip() or "(no name)"
+                    append_log(f"Row {idx}: generating for {learner}…")
+                elif event == "row_done":
+                    done_count["value"] += 1
+                    out_path = payload.get("out_path", "")
+                    base = os.path.basename(out_path) if out_path else "(saved)"
+                    append_log(f"✅ Saved: {base}")
+                    total = total_rows_box["value"] or 0
+                    if total > 0:
+                        percent = int(min(100, round((done_count["value"] / total) * 100)))
+                        progress_bar.progress(percent)
+                elif event == "row_error":
+                    done_count["value"] += 1
+                    err = payload.get("error", "Unknown error")
+                    idx = int(payload.get("index", 0)) + 1
+                    append_log(f"❌ Row {idx} error: {err}")
+                    total = total_rows_box["value"] or 0
+                    if total > 0:
+                        percent = int(min(100, round((done_count["value"] / total) * 100)))
+                        progress_bar.progress(percent)
+                elif event == "complete":
+                    gen = int(payload.get("generated", 0) or 0)
+                    total = int(payload.get("total_rows", 0) or 0)
+                    status_placeholder.write(f"Completed. Generated {gen} of {total} row(s).")
+
+            generate_documents_from_csv(temp_csv_path, TEMPLATE_PATH, OUTPUT_DIR, progress=on_progress)
 
         generated = list_generated_docs(OUTPUT_DIR)
         if generated:
