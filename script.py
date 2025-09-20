@@ -91,10 +91,52 @@ DECLARED_PLACEHOLDERS: List[str] = [
 ]
 
 
+def process_criteria(targeted: str, achieved: str, max_criteria: int = 3) -> tuple[list[str], list[str]]:
+    """Process targeted and achieved criteria into lists and Y/N markers.
+    
+    Args:
+        targeted: Comma-separated string of targeted criteria
+        achieved: Comma-separated string of achieved criteria
+        max_criteria: Maximum number of criteria to process (default 3)
+    """
+    # Split and clean targeted criteria
+    targeted_list = [c.strip() for c in targeted.split(',') if c.strip()]
+    # Split and clean achieved criteria
+    achieved_list = [c.strip() for c in achieved.split(',') if c.strip()]
+    
+    # Generate Y/N list based on whether each targeted criteria was achieved
+    achieved_yn = ['Y' if t in achieved_list else 'N' for t in targeted_list]
+    
+    # Pad both lists to specified length with empty strings
+    targeted_list.extend([''] * (max_criteria - len(targeted_list)))
+    achieved_yn.extend([''] * (max_criteria - len(achieved_yn)))
+    
+    return targeted_list[:max_criteria], achieved_yn[:max_criteria]
+
 def replace_all_placeholders(doc: Document, row: Dict[str, str]) -> None:
     """Replace placeholders in doc using both declared list and dynamic [Header] placeholders."""
     # Build mapping: placeholder variant -> replacement value
     replacement_map: Dict[str, str] = {}
+
+    # Handle Initial criteria placeholders (up to 3)
+    initial_targeted = row.get('Initial - Targeted Criteria', '').strip()
+    initial_achieved = row.get('Initial - Criteria Achieved', '').strip()
+    initial_targeted_list, initial_achieved_yn = process_criteria(initial_targeted, initial_achieved, max_criteria=3)
+    
+    # Add Initial criteria mappings
+    for i, (target, achieved) in enumerate(zip(initial_targeted_list, initial_achieved_yn), 1):
+        replacement_map[f'[ITC{i}]'] = target
+        replacement_map[f'[ICA{i}]'] = achieved
+
+    # Handle Resubmission criteria placeholders (up to 5)
+    resub_targeted = row.get('Resubmission - Targeted Criteria', '').strip()
+    resub_achieved = row.get('Resubmission - Criteria Achieved', '').strip()
+    resub_targeted_list, resub_achieved_yn = process_criteria(resub_targeted, resub_achieved, max_criteria=5)
+    
+    # Add Resubmission criteria mappings
+    for i, (target, achieved) in enumerate(zip(resub_targeted_list, resub_achieved_yn), 1):
+        replacement_map[f'[RTC{i}]'] = target
+        replacement_map[f'[RCA{i}]'] = achieved
 
     # Declared placeholders from specification
     for placeholder in DECLARED_PLACEHOLDERS:
