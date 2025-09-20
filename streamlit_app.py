@@ -46,6 +46,7 @@ with st.sidebar:
     
     st.markdown("---")
     st.markdown("**Downloads 📥**")
+    st.markdown("**Download the Excel template to fill in the data**")
     
     # Add download button for the Excel template
     excel_path = os.path.join(SOURCE_DIR, "btec_data_template.xlsx")

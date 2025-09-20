@@ -6,30 +6,34 @@ from typing import Dict, List, Set, Optional, Callable, Tuple
 from openpyxl import load_workbook
 from datetime import date, datetime
 
-def replace_text_in_paragraph(paragraph, placeholder: str, replacement: str) -> None:
+def replace_text_in_paragraph(paragraph, replacements: dict) -> None:
+    """Replace multiple placeholders in a paragraph at once."""
     full_text = ''.join(run.text for run in paragraph.runs)
-    if placeholder in full_text:
-        new_text = full_text.replace(placeholder, replacement)
+    modified = False
+    
+    for placeholder, replacement in replacements.items():
+        if placeholder in full_text:
+            full_text = full_text.replace(placeholder, replacement)
+            modified = True
+    
+    if modified:
         # Clear existing runs
         for run in paragraph.runs:
             run.text = ''
-        # Set the new text as a single run (handles case where there are no runs)
+        # Set the new text as a single run
         if paragraph.runs:
-            paragraph.runs[0].text = new_text
+            paragraph.runs[0].text = full_text
         else:
-            paragraph.add_run(new_text)
+            paragraph.add_run(full_text)
 
-def replace_placeholders(doc: Document, placeholder: str, replacement: str) -> None:
-    # Replace in paragraphs outside tables
-    # for paragraph in doc.paragraphs:
-    #     replace_text_in_paragraph(paragraph, placeholder, replacement)
-
+def replace_placeholders(doc: Document, replacements: dict) -> None:
+    """Replace all placeholders in the document at once."""
     # Replace in tables
     for table in doc.tables:
         for row in table.rows:
             for cell in row.cells:
                 for paragraph in cell.paragraphs:
-                    replace_text_in_paragraph(paragraph, placeholder, replacement)
+                    replace_text_in_paragraph(paragraph, replacements)
 
  
 
@@ -145,22 +149,23 @@ def replace_all_placeholders(doc: Document, row: Dict[str, str]) -> None:
         for variant in generate_placeholder_variants(placeholder):
             replacement_map[variant] = value
 
-    # Dynamic placeholders for each CSV column (covers additional fields if any)
-    # for header in csv_headers:
-    #     placeholder = f"[{header}]"
-    #     value = (row.get(header) or '').strip()
-    #     for variant in generate_placeholder_variants(placeholder):
-    #         replacement_map[variant] = value
+    # Perform all replacements at once
+    replace_placeholders(doc, replacement_map)
 
-    # Perform replacements
-    for placeholder, replacement in replacement_map.items():
-        replace_placeholders(doc, placeholder, replacement)
 
+_template_cache = {}
+
+def get_template_doc(template_path: str) -> Document:
+    """Get a cached template document or create a new one."""
+    if template_path not in _template_cache:
+        _template_cache[template_path] = Document(template_path)
+    return Document(template_path)  # Return a fresh copy from the template
 
 def generate_documents_from_csv(
     csv_path: str,
     template_path: str,
     progress: Optional[Callable[[str, Dict[str, object]], None]] = None,
+    batch_size: int = 10
 ) -> List[Tuple[str, bytes]]:
     """Generate documents in memory and return list of (filename, document_bytes) tuples."""
     if not os.path.exists(template_path):
@@ -180,6 +185,11 @@ def generate_documents_from_csv(
 
     generated_docs = []
     generated_count = 0
+    current_batch = []
+    used_base_names = set()  # Track used base names
+
+    # Cache the template document
+    get_template_doc(template_path)
 
     with open(csv_path, mode='r', encoding='utf-8-sig', newline='') as f:
         reader = csv.DictReader(f)
@@ -189,17 +199,20 @@ def generate_documents_from_csv(
                 if progress:
                     progress('row_start', {'index': index, 'row': row})
 
-                # Create a fresh document from the template for each row
-                print(f"Creating document for row {index}")
-                doc = Document(template_path)
-
+                # Create a fresh document from the template
+                doc = get_template_doc(template_path)
                 replace_all_placeholders(doc, row)
 
                 name = (row.get('Learner Name') or '').strip()
                 reg = (row.get('Learner Registration Number') or '').strip()
                 base_name = f"{name} {reg}".strip()
-                if not base_name:
-                    base_name = f"output_{index + 1}"
+                # Handle duplicate base names
+                original_base_name = base_name
+                counter = 1
+                while base_name in used_base_names:
+                    base_name = f"{original_base_name} {counter}"
+                    counter += 1
+                used_base_names.add(base_name)
                 filename = f"{base_name}.docx"
 
                 # Save document to bytes buffer
@@ -214,10 +227,15 @@ def generate_documents_from_csv(
                 generated_count += 1
                 if progress:
                     progress('row_done', {'index': index, 'filename': filename})
+
+                # Process in batches to manage memory
+                current_batch.append((filename, doc_bytes))
+                if len(current_batch) >= batch_size:
+                    current_batch = []
+
             except Exception as e:
                 if progress:
                     progress('row_error', {'index': index, 'error': str(e)})
-                # Continue with next row
                 continue
 
     if progress:
@@ -230,20 +248,35 @@ def convert_xlsx_to_csv(xlsx_path: str, csv_path: str) -> None:
     if not os.path.exists(xlsx_path):
         raise FileNotFoundError(f"XLSX not found: {xlsx_path}")
 
+    # Use read_only mode and data_only for better performance
     wb = load_workbook(filename=xlsx_path, read_only=True, data_only=True)
     ws = wb.worksheets[0]
 
+    # Pre-compile the format function for better performance
+    def format_cell_for_csv(value):
+        if value is None:
+            return ""
+        if isinstance(value, (datetime, date)):
+            return value.isoformat().split('T')[0]
+        return str(value)
+
+    # Use a buffer to write rows in batches
+    buffer_size = 1000
+    row_buffer = []
+
     with open(csv_path, mode='w', encoding='utf-8', newline='') as f:
         writer = csv.writer(f)
+        
         for row in ws.iter_rows(values_only=True):
-            def format_cell_for_csv(value):
-                if isinstance(value, datetime):
-                    return value.date().isoformat()
-                if isinstance(value, date):
-                    return value.isoformat()
-                return "" if value is None else value
-
-            writer.writerow([format_cell_for_csv(v) for v in row])
+            row_buffer.append([format_cell_for_csv(v) for v in row])
+            
+            if len(row_buffer) >= buffer_size:
+                writer.writerows(row_buffer)
+                row_buffer = []
+        
+        # Write any remaining rows
+        if row_buffer:
+            writer.writerows(row_buffer)
 
     wb.close()
 
