@@ -198,7 +198,6 @@ def generate_documents_from_csv(
     csv_path: str,
     template_path: str,
     progress: Optional[Callable[[str, Dict[str, object]], None]] = None,
-    *,  # Force remaining args to be keyword-only
     max_workers: Optional[int] = None
 ) -> List[Tuple[str, bytes]]:
     """Generate documents in memory and return list of (filename, document_bytes) tuples."""
