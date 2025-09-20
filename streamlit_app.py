@@ -1,6 +1,7 @@
 import os
 import io
 import zipfile
+import shutil
 import streamlit as st
 from typing import List
 
@@ -88,6 +89,19 @@ if generate_clicked and uploaded is not None:
             convert_xlsx_to_csv(temp_xlsx_path, temp_csv_path)
             status_placeholder.write("CSV ready. Starting document generation…")
 
+            # Clear output directory before generating new documents
+            try:
+                status_placeholder.write("Clearing output folder…")
+                for name in os.listdir(OUTPUT_DIR):
+                    path = os.path.join(OUTPUT_DIR, name)
+                    if os.path.isfile(path) or os.path.islink(path):
+                        os.unlink(path)
+                    elif os.path.isdir(path):
+                        shutil.rmtree(path)
+                append_log("🧹 Output folder cleared.")
+            except Exception as clear_err:
+                append_log(f"⚠️ Could not fully clear output: {clear_err}")
+
             # Generate documents into OUTPUT_DIR
             total_rows_box = {"value": 0}
             done_count = {"value": 0}
@@ -143,6 +157,20 @@ if generate_clicked and uploaded is not None:
                 file_name="generated_docs.zip",
                 mime="application/zip",
             )
+
+            # Minimize progress UI after ZIP is generated; provide collapsible details
+            try:
+                progress_bar.empty()
+                status_placeholder.empty()
+                log_placeholder.empty()
+            except Exception:
+                pass
+
+            with st.expander("View progress details", expanded=False):
+                if logs:
+                    st.code("\n".join(logs))
+                else:
+                    st.write("No progress logs available.")
         else:
             st.warning("No documents were generated. Check your data headers and placeholders.")
     except Exception as e:
