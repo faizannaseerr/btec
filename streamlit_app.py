@@ -58,6 +58,22 @@ with st.sidebar:
     st.markdown("**Paths**")
     st.code(f"Template: {TEMPLATE_PATH}")
     st.code(f"Output:   {OUTPUT_DIR}")
+    
+    st.markdown("---")
+    st.markdown("**Downloads 📥**")
+    
+    # Add download button for the Excel template
+    excel_path = os.path.join(SOURCE_DIR, "btec_data_template.xlsx")
+    if os.path.exists(excel_path):
+        with open(excel_path, "rb") as file:
+            st.download_button(
+                label="Download Excel Template ",
+                data=file,
+                file_name="btec_data_template.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            )
+    else:
+        st.warning("Excel template file not found")
 
 generate_clicked = st.button("Generate Documents", type="primary", disabled=uploaded is None)
 
