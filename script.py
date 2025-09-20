@@ -1,12 +1,12 @@
-from docx import Document
+from docx import Document  # type: ignore
 import csv
 import os
 import io
-from typing import Dict, List, Set, Optional, Callable, Tuple
-from openpyxl import load_workbook
+from typing import Dict, List, Set, Optional, Callable, Tuple, Any
+from openpyxl import load_workbook  # type: ignore
 from datetime import date, datetime
 
-def replace_text_in_paragraph(paragraph, replacements: dict) -> None:
+def replace_text_in_paragraph(paragraph: Any, replacements: dict) -> None:
     """Replace multiple placeholders in a paragraph at once."""
     full_text = ''.join(run.text for run in paragraph.runs)
     modified = False
@@ -161,11 +161,45 @@ def get_template_doc(template_path: str) -> Document:
         _template_cache[template_path] = Document(template_path)
     return Document(template_path)  # Return a fresh copy from the template
 
+from concurrent.futures import ProcessPoolExecutor, as_completed
+import multiprocessing
+
+def _process_single_row(args) -> Tuple[int, Tuple[Optional[str], Any]]:
+    """Process a single row and return the generated document.
+    
+    Returns:
+        Tuple containing (index, (filename, doc_bytes)) on success
+        or (index, (None, error_message)) on failure
+    """
+    index, row, template_path = args
+    try:
+        # Create a fresh document from the template
+        doc = Document(template_path)  # Don't use cache in worker processes
+        replace_all_placeholders(doc, row)
+
+        # Create simple filename from name and registration number
+        name = (row.get('Learner Name') or '').strip()
+        reg = (row.get('Learner Registration Number') or '').strip()
+        filename = f"{name} {reg}.docx".strip()
+
+        # Save document to bytes buffer
+        doc_buffer = io.BytesIO()
+        doc.save(doc_buffer)
+        doc_bytes = doc_buffer.getvalue()
+        doc_buffer.close()
+
+        return index, (filename, doc_bytes)
+    except (IOError, ValueError, KeyError) as e:
+        return index, (None, f"Error processing row: {str(e)}")
+    except Exception as e:
+        return index, (None, f"Unexpected error: {str(e)}")
+
 def generate_documents_from_csv(
     csv_path: str,
     template_path: str,
     progress: Optional[Callable[[str, Dict[str, object]], None]] = None,
-    batch_size: int = 10
+    *,  # Force remaining args to be keyword-only
+    max_workers: Optional[int] = None
 ) -> List[Tuple[str, bytes]]:
     """Generate documents in memory and return list of (filename, document_bytes) tuples."""
     if not os.path.exists(template_path):
@@ -183,63 +217,50 @@ def generate_documents_from_csv(
     if progress:
         progress('start', {'total_rows': total_rows})
 
-    generated_docs = []
-    generated_count = 0
-    current_batch = []
-    used_base_names = set()  # Track used base names
-
-    # Cache the template document
-    get_template_doc(template_path)
-
+    # Read all rows into memory
     with open(csv_path, mode='r', encoding='utf-8-sig', newline='') as f:
-        reader = csv.DictReader(f)
+        rows = list(csv.DictReader(f))
 
-        for index, row in enumerate(reader):
+    generated_docs = []
+
+    # Determine number of workers
+    if max_workers is None:
+        # Leave one core free for the main process
+        max_workers = max(1, multiprocessing.cpu_count() - 1)
+
+    # Create work items
+    work_items = [(i, row, template_path) for i, row in enumerate(rows)]
+
+    with ProcessPoolExecutor(max_workers=max_workers) as executor:
+        # Submit all work items
+        future_to_index = {
+            executor.submit(_process_single_row, item): item[0]
+            for item in work_items
+        }
+
+        # Process results as they complete
+        for future in as_completed(future_to_index):
+            index = future_to_index[future]
             try:
-                if progress:
-                    progress('row_start', {'index': index, 'row': row})
+                index, result = future.result()
+                filename, doc_bytes = result
 
-                # Create a fresh document from the template
-                doc = get_template_doc(template_path)
-                replace_all_placeholders(doc, row)
-
-                name = (row.get('Learner Name') or '').strip()
-                reg = (row.get('Learner Registration Number') or '').strip()
-                base_name = f"{name} {reg}".strip()
-                # Handle duplicate base names
-                original_base_name = base_name
-                counter = 1
-                while base_name in used_base_names:
-                    base_name = f"{original_base_name} {counter}"
-                    counter += 1
-                used_base_names.add(base_name)
-                filename = f"{base_name}.docx"
-
-                # Save document to bytes buffer
-                doc_buffer = io.BytesIO()
-                doc.save(doc_buffer)
-                doc_bytes = doc_buffer.getvalue()
-                doc_buffer.close()
+                if filename is None:  # Error occurred
+                    if progress:
+                        progress('row_error', {'index': index, 'error': doc_bytes})  # doc_bytes contains error message
+                    continue
 
                 generated_docs.append((filename, doc_bytes))
-                print(f"Generated document: {filename}")
-
-                generated_count += 1
+                
                 if progress:
                     progress('row_done', {'index': index, 'filename': filename})
-
-                # Process in batches to manage memory
-                current_batch.append((filename, doc_bytes))
-                if len(current_batch) >= batch_size:
-                    current_batch = []
 
             except Exception as e:
                 if progress:
                     progress('row_error', {'index': index, 'error': str(e)})
-                continue
 
     if progress:
-        progress('complete', {'generated': generated_count, 'total_rows': total_rows})
+        progress('complete', {'generated': len(generated_docs), 'total_rows': total_rows})
 
     return generated_docs
 

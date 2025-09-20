@@ -1,6 +1,7 @@
 import os
 import io
 import zipfile
+import multiprocessing
 import streamlit as st
 from typing import List, Tuple
 
@@ -30,9 +31,19 @@ with st.expander("What will happen?", expanded=False):
     st.markdown(
         "- Convert the uploaded Excel to CSV\n"
         "- Read each row as one learner/record\n"
-        "- Fill placeholders in `template.docx` using the row values\n"
+        "- Fill placeholders in `template.docx` using the row values in parallel\n"
         "- Save one `.docx` per row into the output folder"
     )
+
+# Add CPU cores selector
+cpu_count = multiprocessing.cpu_count()
+max_workers = st.slider(
+    "Number of CPU cores to use",
+    min_value=1,
+    max_value=max(1, cpu_count),
+    value=max(1, cpu_count - 1),
+    help="More cores = faster processing, but leave at least 1 core free for system tasks"
+)
 
 
 if not os.path.exists(TEMPLATE_PATH):
@@ -46,14 +57,13 @@ with st.sidebar:
     
     st.markdown("---")
     st.markdown("**Downloads 📥**")
-    st.markdown("**Download the Excel template to fill in the data**")
     
     # Add download button for the Excel template
     excel_path = os.path.join(SOURCE_DIR, "btec_data_template.xlsx")
     if os.path.exists(excel_path):
         with open(excel_path, "rb") as file:
             st.download_button(
-                label="Download Excel Template ",
+                label="Download Marksheet Template",
                 data=file,
                 file_name="btec_data_template.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
@@ -128,7 +138,7 @@ if generate_clicked and uploaded is not None:
                     total = int(payload.get("total_rows", 0) or 0)
                     status_placeholder.write(f"Completed. Generated {gen} of {total} row(s).")
 
-            generated_docs = generate_documents_from_csv(temp_csv_path, TEMPLATE_PATH, progress=on_progress)
+            generated_docs = generate_documents_from_csv(temp_csv_path, TEMPLATE_PATH, progress=on_progress, max_workers=max_workers)
 
         if generated_docs:
             st.success(f"Generated {len(generated_docs)} document(s).")
