@@ -1,38 +1,24 @@
 import os
 import io
 import zipfile
-import shutil
 import streamlit as st
-from typing import List
+from typing import List, Tuple
 
 from script import convert_xlsx_to_csv, generate_documents_from_csv
 
 
-def list_generated_docs(output_dir: str) -> List[str]:
-    if not os.path.exists(output_dir):
-        return []
-    return [
-        os.path.join(output_dir, name)
-        for name in os.listdir(output_dir)
-        if name.lower().endswith(".docx")
-    ]
-
-
-def zip_files(file_paths: List[str]) -> bytes:
+def create_zip_from_docs(docs: List[Tuple[str, bytes]]) -> bytes:
+    """Create a ZIP file in memory from a list of (filename, document_bytes) tuples."""
     buffer = io.BytesIO()
     with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as zipf:
-        for file_path in file_paths:
-            arcname = os.path.basename(file_path)
-            zipf.write(file_path, arcname=arcname)
+        for filename, doc_bytes in docs:
+            zipf.writestr(filename, doc_bytes)
     buffer.seek(0)
     return buffer.read()
 
 
 SOURCE_DIR = os.path.dirname(os.path.abspath(__file__))
 TEMPLATE_PATH = os.path.join(SOURCE_DIR, "template.docx")
-OUTPUT_DIR = os.path.join(SOURCE_DIR, "output")
-
-os.makedirs(OUTPUT_DIR, exist_ok=True)
 
 st.set_page_config(page_title="BTEC Doc Generator", page_icon="📄", layout="centered")
 st.title("BTEC Assessment Document Generator")
@@ -57,7 +43,6 @@ uploaded = st.file_uploader("Upload .xlsx file", type=["xlsx"], accept_multiple_
 with st.sidebar:
     st.markdown("**Paths**")
     st.code(f"Template: {TEMPLATE_PATH}")
-    st.code(f"Output:   {OUTPUT_DIR}")
     
     st.markdown("---")
     st.markdown("**Downloads 📥**")
@@ -105,20 +90,7 @@ if generate_clicked and uploaded is not None:
             convert_xlsx_to_csv(temp_xlsx_path, temp_csv_path)
             status_placeholder.write("CSV ready. Starting document generation…")
 
-            # Clear output directory before generating new documents
-            try:
-                status_placeholder.write("Clearing output folder…")
-                for name in os.listdir(OUTPUT_DIR):
-                    path = os.path.join(OUTPUT_DIR, name)
-                    if os.path.isfile(path) or os.path.islink(path):
-                        os.unlink(path)
-                    elif os.path.isdir(path):
-                        shutil.rmtree(path)
-                append_log("🧹 Output folder cleared.")
-            except Exception as clear_err:
-                append_log(f"⚠️ Could not fully clear output: {clear_err}")
-
-            # Generate documents into OUTPUT_DIR
+            # Generate documents in memory
             total_rows_box = {"value": 0}
             done_count = {"value": 0}
 
@@ -135,9 +107,8 @@ if generate_clicked and uploaded is not None:
                     append_log(f"Row {idx}: generating for {learner}…")
                 elif event == "row_done":
                     done_count["value"] += 1
-                    out_path = payload.get("out_path", "")
-                    base = os.path.basename(out_path) if out_path else "(saved)"
-                    append_log(f"✅ Saved: {base}")
+                    filename = payload.get("filename", "")
+                    append_log(f"✅ Generated: {filename}")
                     total = total_rows_box["value"] or 0
                     if total > 0:
                         percent = int(min(100, round((done_count["value"] / total) * 100)))
@@ -156,17 +127,16 @@ if generate_clicked and uploaded is not None:
                     total = int(payload.get("total_rows", 0) or 0)
                     status_placeholder.write(f"Completed. Generated {gen} of {total} row(s).")
 
-            generate_documents_from_csv(temp_csv_path, TEMPLATE_PATH, OUTPUT_DIR, progress=on_progress)
+            generated_docs = generate_documents_from_csv(temp_csv_path, TEMPLATE_PATH, progress=on_progress)
 
-        generated = list_generated_docs(OUTPUT_DIR)
-        if generated:
-            st.success(f"Generated {len(generated)} document(s) in {OUTPUT_DIR}.")
+        if generated_docs:
+            st.success(f"Generated {len(generated_docs)} document(s).")
+            doc_filenames = [doc[0] for doc in generated_docs]
             with st.expander("View generated files"):
-                for path in generated:
-                    st.write(os.path.basename(path))
+                for doc_name in doc_filenames:
+                    st.write(doc_name)
 
-            # Offer a zip download for convenience
-            zip_bytes = zip_files(generated)
+            zip_bytes = create_zip_from_docs(generated_docs)
             st.download_button(
                 label="Download all as ZIP",
                 data=zip_bytes,

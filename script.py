@@ -1,8 +1,8 @@
 from docx import Document
 import csv
 import os
-from typing import Dict, List, Set, Optional, Callable
-import tempfile
+import io
+from typing import Dict, List, Set, Optional, Callable, Tuple
 from openpyxl import load_workbook
 from datetime import date, datetime
 
@@ -160,15 +160,13 @@ def replace_all_placeholders(doc: Document, row: Dict[str, str]) -> None:
 def generate_documents_from_csv(
     csv_path: str,
     template_path: str,
-    output_dir: str,
     progress: Optional[Callable[[str, Dict[str, object]], None]] = None,
-) -> None:
+) -> List[Tuple[str, bytes]]:
+    """Generate documents in memory and return list of (filename, document_bytes) tuples."""
     if not os.path.exists(template_path):
         raise FileNotFoundError(f"Template not found: {template_path}")
     if not os.path.exists(csv_path):
         raise FileNotFoundError(f"CSV not found: {csv_path}")
-
-    os.makedirs(output_dir, exist_ok=True)
 
     # Pre-count total data rows for progress reporting
     try:
@@ -180,6 +178,7 @@ def generate_documents_from_csv(
     if progress:
         progress('start', {'total_rows': total_rows})
 
+    generated_docs = []
     generated_count = 0
 
     with open(csv_path, mode='r', encoding='utf-8-sig', newline='') as f:
@@ -199,18 +198,22 @@ def generate_documents_from_csv(
                 name = (row.get('Learner Name') or '').strip()
                 reg = (row.get('Learner Registration Number') or '').strip()
                 base_name = f"{name} {reg}".strip()
-                if f"{base_name}.docx" in os.listdir(output_dir):
-                    base_name = f"{base_name}_{index + 1}"
                 if not base_name:
                     base_name = f"output_{index + 1}"
-                out_path = os.path.join(output_dir, f"{base_name}.docx")
+                filename = f"{base_name}.docx"
 
-                doc.save(out_path)
-                print(f"Saved: {out_path}")
+                # Save document to bytes buffer
+                doc_buffer = io.BytesIO()
+                doc.save(doc_buffer)
+                doc_bytes = doc_buffer.getvalue()
+                doc_buffer.close()
+
+                generated_docs.append((filename, doc_bytes))
+                print(f"Generated document: {filename}")
 
                 generated_count += 1
                 if progress:
-                    progress('row_done', {'index': index, 'out_path': out_path})
+                    progress('row_done', {'index': index, 'filename': filename})
             except Exception as e:
                 if progress:
                     progress('row_error', {'index': index, 'error': str(e)})
@@ -219,6 +222,8 @@ def generate_documents_from_csv(
 
     if progress:
         progress('complete', {'generated': generated_count, 'total_rows': total_rows})
+
+    return generated_docs
 
 def convert_xlsx_to_csv(xlsx_path: str, csv_path: str) -> None:
     """Convert the first worksheet of an .xlsx file to a UTF-8 CSV file."""
@@ -247,13 +252,12 @@ if __name__ == "__main__":
     source_dir = os.path.dirname(os.path.abspath(__file__))
     TEMPLATE_PATH = os.path.join(source_dir, "template.docx")
     XLSX_PATH = os.path.join(source_dir, "dummy_data.xlsx")
-    OUTPUT_DIR = os.path.join(source_dir, "output")
-
-    os.makedirs(OUTPUT_DIR, exist_ok=True)
 
     # Convert XLSX to a temp CSV file
+    import tempfile
     with tempfile.TemporaryDirectory() as tmpdir:
         temp_csv_path = os.path.join(tmpdir, "dummy.csv")
         convert_xlsx_to_csv(XLSX_PATH, temp_csv_path)
-        generate_documents_from_csv(temp_csv_path, TEMPLATE_PATH, OUTPUT_DIR)
+        docs = generate_documents_from_csv(temp_csv_path, TEMPLATE_PATH)
+        print(f"Generated {len(docs)} documents")
 
